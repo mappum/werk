@@ -1,8 +1,10 @@
 [package]
 name = "werk"
+description = "A simple thread pool"
 version = "0.0.0"
 authors = ["Matt Bell <mappum@gmail.com>"]
 edition = "2018"
+license = "MIT"
 
 [dependencies]
 error-chain = "0.12.1"
