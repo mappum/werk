@@ -8,87 +8,81 @@ use std::sync::mpsc::{
 
 use crate::error::Result;
 
-pub trait Exec {
-    type Input: Send + 'static;
-    type Output: Send + 'static;
-
-    fn setup(&mut self) {} // TODO: result
-    fn exec(&mut self, input: Self::Input) -> Self::Output;
-}
-
-pub struct Worker<E: Exec> {
+pub struct Worker<I: Send, O: Send> {
     handle: thread::JoinHandle<()>,
-    input: Sender<Request<E::Input>>,
-    output: Receiver<E::Output>
+    input: Sender<Request<I, O>>
 }
 
-pub enum Request<T: Send> {
-    Exec(T),
+pub enum Request<I: Send, O: Send> {
+    Exec(I, Sender<O>),
     Kill
 }
 
-impl<E: Exec + Send + 'static> Worker<E> {
-    pub fn new(mut exec: E) -> Worker<E> {
-        let (input_tx, input_rx) = channel::<Request<E::Input>>();
-        let (output_tx, output_rx) = sync_channel::<E::Output>(0);
+impl<I: Send + 'static, O: Send + 'static> Worker<I, O> {
+    pub fn new<S, W, C>(setup_fn: S, work_fn: W) -> Worker<I, O>
+        where
+            S: 'static + Send + Fn() -> C,
+            W: 'static + Send + Fn(&mut C, I) -> O
+    {
+        let (tx, rx) = channel::<Request<I, O>>();
 
         let handle = thread::spawn(move || {
-            let input = input_rx;
-            let output = output_tx;
-
-            // TODO: when this returns Result, handle sending back
-            exec.setup();
+            let mut ctx = setup_fn();
 
             loop {
                 // block until we have work to do
-                let req = input.recv().unwrap();
+                let req = rx.recv().unwrap();
                 
-                let res = match req {
-                    Request::Exec(input) => exec.exec(input),
+                match req {
+                    Request::Exec(input, output) => {
+                        let res = work_fn(&mut ctx, input);
+                        output.send(res).unwrap();
+                    }
                     Request::Kill => break
                 };
-
-                output.send(res).unwrap();
             }
         });
 
-        Worker {
-            handle,
-            input: input_tx,
-            output: output_rx
-        }
+        Worker { handle, input: tx }
     }
 
-    pub fn exec(&self, input: E::Input) -> Result<E::Output> {
-        if let Err(error) = self.input.send(Request::Exec(input)) {
-            bail!("Could not send work to worker");
-        }
-        Ok(self.output.recv()?)
+    pub fn exec(&self, input: I) -> impl FnOnce() -> O {
+        let (tx, rx) = channel::<O>();
+        self.input.send(Request::Exec(input, tx)).unwrap();
+        move || -> O { rx.recv().unwrap() }
     }
 }
 
-impl<E: Exec> Drop for Worker<E> {
+impl<I: Send, O: Send> Drop for Worker<I, O> {
     fn drop(&mut self) {
         self.input.send(Request::Kill).unwrap();
     }
 }
 
-pub struct Pool<E: Exec> {
-    workers: Vec<Worker<E>>
-}
+// pub struct Pool<E: Exec> {
+//     workers: Vec<Worker<E>>
+// }
 
-impl<E: Exec> Pool<E> {
-    pub fn new(worker_count: usize) -> Pool<E> {
-        let workers = Vec::with_capacity(worker_count);
+// impl<E: Exec + Default + Send + 'static> Pool<E> {
+//     pub fn new(worker_count: usize) -> Pool<E> {
+//         // TODO: return result based on worker setup
 
-        for i in 0..worker_count {
-            // let worker = Worker::new()
-            // workers.push(worker);
-        }
+//         let handles = Vec::with_capacity(worker_count);
+//         let workers = Vec::with_capacity(worker_count);
 
-        Pool { workers }
-    }
-}
+//         for i in 0..worker_count {
+//             let exec: E = Default::default();
+//             let (handle, worker) = Worker::new(exec);
+//             handles.push(handle);
+//             workers.push(worker);
+//         }
+
+//         // TODO: wait for worker setup
+//         // TODO: keep handles
+
+//         Pool { workers }
+//     }
+// }
 
 
 #[cfg(test)]
@@ -97,20 +91,58 @@ mod tests {
     
     #[test]
     fn worker_test() {
-        struct TestExec(u64);
-        impl Exec for TestExec{
-            type Input = u64;
-            type Output = u64;
-
-            fn exec(&mut self, n: u64) -> u64 {
-                for i in 1..=n {
-                    self.0 += i;
+        let worker = Worker::new(
+            || 0 as usize,
+            |sum, n| {
+                for i in 1..n {
+                    *sum += i; 
                 }
-                self.0
+                *sum
             }
-        }
-
-        let worker = Worker::new(TestExec(1));
-        println!("result: {:?}", worker.exec(100));
+        );
+        assert_eq!(worker.exec(100)(), 4950);
+        assert_eq!(worker.exec(100)(), 9900);
     }
+
+    // #[test]
+    // fn pool_test() {
+        // let worker 
+
+        //         // (stop forking when we've recursed all the way)
+        //         if nums.is_empty() {
+        //             return 0;
+        //         }
+
+        //         if workers.is_empty() {
+        //             return nums.iter().sum();
+        //         }
+
+        //         // split numbers into left and right halves
+        //         let (left, right) = nums.split_at(nums.len() / 2);
+
+        //         // start working on right half
+        //         // (or if out of workers, compute it in this thread).
+        //         // returns a join function.
+        //         let right_sum_join = workers[0].exec((workers[1..].to_vec(), right));
+        //         // sum left half
+        //         let left_sum = left.iter().sum();
+        //         // combine the sums, waiting for right half if necessary
+        //         left_sum + right_sum_join()
+        //     }
+        // }
+
+        // let nums: Vec<u32> = (0..100).collect();
+
+        // println!("result: {:?}", res_join());
+    // }
 }
+
+// werk::pool(8, || {
+//     let db = rocksdb::open();
+
+//     let work = |n| {
+//         n * 2
+//     };
+
+//     Ok(work)
+// });

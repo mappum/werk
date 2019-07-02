@@ -8,3 +8,6 @@ license = "MIT"
 
 [dependencies]
 error-chain = "0.12.1"
+
+[dev-dependencies]
+num_cpus = "1.10.1"
