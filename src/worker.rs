@@ -45,11 +45,21 @@ impl<I: Send + 'static, O: Send + 'static> Worker<I, O> {
 
         Worker { handle, input: tx }
     }
+}
 
-    pub fn exec(&self, input: I) -> impl FnOnce() -> O {
+impl<I: Send + Sized, O: Send + Sized + 'static> FnOnce<(I,)> for Worker<I, O> {
+    type Output = Box<FnOnce() -> O>;
+
+    extern "rust-call" fn call_once(mut self, args: (I,)) -> Self::Output {
+        self.call_mut(args)
+    }
+}
+
+impl<I: Send + Sized, O: Send + Sized + 'static> FnMut<(I,)> for Worker<I, O> {
+    extern "rust-call" fn call_mut(&mut self, args: (I,)) -> Self::Output {
         let (tx, rx) = channel::<O>();
-        self.input.send(Request::Exec(input, tx)).unwrap();
-        move || -> O { rx.recv().unwrap() }
+        self.input.send(Request::Exec(args.0, tx)).unwrap();
+        Box::new(move || -> O { rx.recv().unwrap() })
     }
 }
 
@@ -91,7 +101,7 @@ mod tests {
     
     #[test]
     fn worker_test() {
-        let worker = Worker::new(
+        let mut worker = Worker::new(
             || 0 as usize,
             |sum, n| {
                 for i in 1..n {
@@ -100,8 +110,9 @@ mod tests {
                 *sum
             }
         );
-        assert_eq!(worker.exec(100)(), 4950);
-        assert_eq!(worker.exec(100)(), 9900);
+        let (join1, join2) = (worker(100), worker(100));
+        assert_eq!(join1(), 4950);
+        assert_eq!(join2(), 9900);
     }
 
     // #[test]
