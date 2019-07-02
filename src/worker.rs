@@ -47,25 +47,37 @@ impl<I: Send + 'static, O: Send + 'static> Worker<I, O> {
     }
 }
 
-impl<I: Send + Sized, O: Send + Sized + 'static> FnOnce<(I,)> for Worker<I, O> {
-    type Output = Box<FnOnce() -> O>;
+impl<I: Send, O: Send + 'static> FnOnce<(I,)> for Worker<I, O> {
+    type Output = Promise<O>;
 
     extern "rust-call" fn call_once(mut self, args: (I,)) -> Self::Output {
         self.call_mut(args)
     }
 }
 
-impl<I: Send + Sized, O: Send + Sized + 'static> FnMut<(I,)> for Worker<I, O> {
+impl<I: Send, O: Send + 'static> FnMut<(I,)> for Worker<I, O> {
     extern "rust-call" fn call_mut(&mut self, args: (I,)) -> Self::Output {
         let (tx, rx) = channel::<O>();
         self.input.send(Request::Exec(args.0, tx)).unwrap();
-        Box::new(move || -> O { rx.recv().unwrap() })
+        Promise { receiver: rx }
     }
 }
 
 impl<I: Send, O: Send> Drop for Worker<I, O> {
     fn drop(&mut self) {
         self.input.send(Request::Kill).unwrap();
+    }
+}
+
+pub struct Promise<O: Send> {
+    receiver: Receiver<O>
+}
+
+impl<O: Send + 'static> FnOnce<()> for Promise<O> {
+    type Output = O;
+
+    extern "rust-call" fn call_once(self, _args: ()) -> O {
+        self.receiver.recv().unwrap()
     }
 }
 
